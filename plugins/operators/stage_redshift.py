@@ -9,69 +9,68 @@ class StageToRedshiftOperator(BaseOperator):
 
     @apply_defaults
     def __init__(self,
-                 # Define your operators params (with defaults) here
-                 # Example:
-                 # redshift_conn_id=your-connection-name
-                 redshift_conn_id = '',
-                 aws_credentials_id ='',
+                 redshift_conn_id='',
+                 aws_credentials_id='',
                  s3_bucket='',
                  s3_key='',
-                 json_path = '',
-                 region='',
-                 table = '',
-
+                 file_format='json',  
+                 json_path='auto',
+                 region='us-west-2',
+                 destination_table='',
                  *args, **kwargs):
-
         super(StageToRedshiftOperator, self).__init__(*args, **kwargs)
-        # Map params here
-        # Example:
-        # self.conn_id = conn_id
         self.redshift_conn_id = redshift_conn_id
-        self.aws_credentials_id= aws_credentials_id
+        self.aws_credentials_id = aws_credentials_id
         self.s3_bucket = s3_bucket
         self.s3_key = s3_key
+        self.file_format = file_format
         self.json_path = json_path
         self.region = region
-        self.table = table
+        self.destination_table = destination_table
 
     def execute(self, context):
-            self.log.info("Connecting to Redshift")
-            redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
-            aws_hook = AwsHook(self.aws_credentials_id)
-            credentials = aws_hook.get_credentials()
-        
-           
-            redshift.run("DELETE FROM {}".format(self.table))
+        self.log.info(f"Starting staging process for {self.destination_table}")
 
-            rendered_key = self.s3_key.format(**context)
-            s3_path = "s3://{}/{}".format(self.s3_bucket, rendered_key)
-            self.log.info("Built ther full S3 path")
+        # Get Redshift and AWS credentials
+        redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
+        aws_hook = AwsHook(self.aws_credentials_id)
+        creds = aws_hook.get_credentials()
 
-            if self.file_format.upper() == "JSON":
-                copy_sql = f"""
-                    COPY {self.table}
-                    FROM '{s3_path}'
-                    ACCESS_KEY_ID '{credentials.access_key}'
-                    SECRET_ACCESS_KEY '{credentials.secret_key}'
-                    JSON '{self.json_path}'
-                    REGION '{self.region}';
-                """
+        # Prepare dynamic S3 key
+        resolved_key = self.s3_key.format(**context)
+        s3_uri = f"s3://{self.s3_bucket}/{resolved_key}"
 
-            elif self.file_format.upper() == "CSV":
-                copy_sql = f"""
-                    COPY {self.table}
-                    FROM '{s3_path}'
-                    ACCESS_KEY_ID '{credentials.access_key}'
-                    SECRET_ACCESS_KEY '{credentials.secret_key}'
-                    CSV
-                    IGNOREHEADER 1
-                    REGION '{self.region}';
-                """
+        self.log.info(f"Resolved S3 path: {s3_uri}")
 
-            else:
-                raise ValueError(f"Unsupported file format: {self.file_format}")
+        # Clear existing data
+        self.log.info(f"Clearing data from Redshift table {self.destination_table}")
+        redshift.run(f"DELETE FROM {self.destination_table}")
 
-        
-            self.log.info("Running the copy command")
-            redshift.run(copy_sql)
-            self.log.info(f"Staging complete for table {self.table}")
+        # Construct COPY SQL based on format
+        if self.file_format.lower() == 'json':
+            copy_stmt = f"""
+                COPY {self.destination_table}
+                FROM '{s3_uri}'
+                ACCESS_KEY_ID '{creds.access_key}'
+                SECRET_ACCESS_KEY '{creds.secret_key}'
+                JSON '{self.json_path}'
+                REGION '{self.region}';
+            """
+        elif self.file_format.lower() == 'csv':
+            copy_stmt = f"""
+                COPY {self.destination_table}
+                FROM '{s3_uri}'
+                ACCESS_KEY_ID '{creds.access_key}'
+                SECRET_ACCESS_KEY '{creds.secret_key}'
+                CSV
+                IGNOREHEADER 1
+                REGION '{self.region}';
+            """
+        else:
+            raise ValueError(f"Unsupported format '{self.file_format}'. Use 'json' or 'csv'.")
+
+        # Execute COPY command
+        self.log.info(f"Executing COPY command for {self.destination_table}")
+        redshift.run(copy_stmt)
+
+        self.log.info(f"Staging complete for table: {self.destination_table}")

@@ -3,44 +3,41 @@ from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
 
 class LoadDimensionOperator(BaseOperator):
+    """
+    Custom operator to load data into a Redshift dimension table.
+    Can optionally truncate the table before inserting.
+    """
 
     ui_color = '#80BD9E'
+    template_fields = ("sql",)
 
     @apply_defaults
     def __init__(self,
-                 # Define your operators params (with defaults) here
-                 # Example:
-                 # conn_id = your-connection-name
-                 redshift_conn_id = '',
+                 redshift_conn_id='',
                  table='',
                  sql='',
-                 truncate='True',
-
+                 truncate=True,
                  *args, **kwargs):
 
         super(LoadDimensionOperator, self).__init__(*args, **kwargs)
-        # Map params here
-        # Example:
-        # self.conn_id = conn_id
         self.redshift_conn_id = redshift_conn_id
         self.table = table
         self.sql = sql
-        self.truncate= truncate
+        self.truncate = truncate
 
     def execute(self, context):
         self.log.info("Connecting to Redshift")
-        redshift_hook = PostgresHook(postgres_conn_id=self.redshift_conn_id)
+        redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
 
-        if self.truncate_insert:
-            self.log.info(f"Truncating table {self.table} before loading the new data")
-            truncate_sql = f"Truncate Table {self.table}"
-            redshift_hook.run(truncate_sql)
+        if self.truncate:
+            self.log.info(f"Truncating dimension table {self.table} before loading new data")
+            redshift.run(f"TRUNCATE TABLE {self.table}")
 
         insert_sql = f"""
             INSERT INTO {self.table}
-            {self.sql_query}
+            {self.sql}
         """
-        self.log.info(f"Running the SQL query: \n{insert_sql}")
 
-        redshift_hook.run(insert_sql)
-        self.log.info(f"Finished loading the data into fact table {self.table}")
+        self.log.info(f"Running SQL for dimension table load:\n{insert_sql}")
+        redshift.run(insert_sql)
+        self.log.info(f"Finished loading data into dimension table: {self.table}")
